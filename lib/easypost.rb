@@ -113,35 +113,56 @@ module EasyPost
     client
   end
 
-  def self.make_request(method, path, api_key=nil, body=nil)
-    client = make_client(URI(@api_base))
+  # start cryo changes
+  def self.use_fedex_api
+    EasyPost.api_base = Rails.application.credentials[:fedex_service][:api_base]
+  end
+
+  def self.use_easypost_api
+    EasyPost.api_base = Rails.application.credentials[:easypost][:api_base]
+  end
+
+  def self.make_request(method, path, api_key = nil, body = nil)
+    authentication = nil
+    fedex_config = Rails.application.credentials[:fedex_service]
+
+    if EasyPost.api_base == fedex_config[:api_base]
+      # scrub request of GET params because fedex custom api fails when these are passed through..
+      path = URI(path).path
+      user_agent = 'FEDEX_MICROSERVICE'
+      authentication = "#{fedex_config[:username]}:#{fedex_config[:password]}"
+    else
+      user_agent = "EasyPost/v2 RubyClient/#{VERSION} Ruby/#{RUBY_VERSION}-p#{RUBY_PATCHLEVEL}"
+      api_key ||= @api_key
+      authentication = "#{api_key}:" if api_key
+    end
 
     request = Net::HTTP.const_get(method.capitalize).new(path)
-    if body
-      request.body = JSON.dump(EasyPost::Util.objects_to_ids(body))
-    end
+    request['Content-Type'] = 'application/json'
+    request['User-Agent'] = user_agent
+    request['Authorization'] = "Basic #{Base64.strict_encode64(authentication)}" if authentication
+    request.body = JSON.dump(EasyPost::Util.objects_to_ids(body)) if body
 
-    request["Content-Type"] = "application/json"
-    request["User-Agent"] = "EasyPost/v2 RubyClient/#{VERSION} Ruby/#{RUBY_VERSION}-p#{RUBY_PATCHLEVEL}"
-    if api_key = api_key || @api_key
-      request["Authorization"] = "Basic #{Base64.strict_encode64("#{api_key}:")}"
-    end
+    Rails.logger.info "EP: #{method.upcase} #{EasyPost.api_base}#{path} #{request.body}"
 
+    client = make_client(URI(EasyPost.api_base))
     response = client.request(request)
 
+    Rails.logger.info "EP: response #{response.body}"
+
     if (400..599).include? response.code.to_i
-      error = JSON.parse(response.body)["error"]
-      raise EasyPost::Error.new(error["message"], response.code.to_i, error["code"], error["errors"], response.body)
+      error = JSON.parse(response.body)['error']
+      raise EasyPost::Error.new(error['message'], response.code.to_i, error['code'], error['errors'], response.body)
     end
 
-    if response["Content-Type"].include? "application/json"
+    if response['Content-Type'].include? 'application/json'
       JSON.parse(response.body)
     else
       response.body
     end
   rescue JSON::ParserError
-    raise RuntimeError.new(
-      "Invalid response object from API, unable to decode.\n#{response.body}"
-    )
+    raise "Invalid response object from API, unable to decode.\n#{response.body}"
   end
+
+  # end of cryo changes
 end
